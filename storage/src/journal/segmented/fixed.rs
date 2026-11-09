@@ -246,7 +246,7 @@ impl<E: Storage + Metrics, A: CodecFixedShared> Inner<E, A> {
                     physical_size,
                     page_size,
                     Self::CHUNK_SIZE,
-                    ReadOptions::default(),
+                    ReadOptions::DONT_CACHE,
                 )
                 .await
                 .map_err(|err| Self::boundary_error(candidate, physical_size, err))?;
@@ -281,7 +281,7 @@ impl<E: Storage + Metrics, A: CodecFixedShared> Inner<E, A> {
             page_size,
             size - Self::CHUNK_SIZE_U64,
             Self::CHUNK_SIZE,
-            ReadOptions::default(),
+            ReadOptions::DONT_CACHE,
         )
         .await
         .map_err(|err| Self::boundary_error(section, size, err))?;
@@ -660,7 +660,7 @@ impl<E: Storage + Metrics, A: CodecFixedShared> Journal<E, A> {
             .truncate_pending(section, end - end % Self::CHUNK_SIZE as u64)
             .await?;
         let mut replay = journal
-            .replay(0, 0, replay_buffer, ReadOptions::default())
+            .replay(0, 0, replay_buffer, ReadOptions::DONT_CACHE)
             .await?;
         while let Some(item) = replay.next().await {
             item?;
@@ -712,7 +712,7 @@ impl<E: Storage + Metrics, A: CodecFixedShared> Journal<E, A> {
             return Ok(end);
         };
         let recoverable = blob
-            .recoverable_prefix_len_at_most(0, end, buffer, ReadOptions::default())
+            .recoverable_prefix_len_at_most(0, end, buffer, ReadOptions::DONT_CACHE)
             .await?;
         Ok(recoverable - recoverable % Self::CHUNK_SIZE as u64)
     }
