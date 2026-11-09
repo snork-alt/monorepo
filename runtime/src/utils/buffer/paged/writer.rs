@@ -189,11 +189,13 @@ impl<B: Blob> Recovery<B> {
     ) -> Result<Self, Error> {
         let blob = Arc::new(blob);
         let page_size: u64 = cache_ref.page_size().widen();
-        let (last_page, pages, invalid_data_found) =
+        let (last_page, pages) =
             Writer::<B>::read_last_valid_page(&blob, original_blob_size, page_size).await?;
+
+        // Every byte past the last valid page is invalid, so trim it from the blob.
+        let new_blob_size = pages * (page_size + CHECKSUM_SIZE);
+        let invalid_data_found = new_blob_size != original_blob_size;
         if invalid_data_found {
-            // Invalid data was detected, trim it from the blob.
-            let new_blob_size = pages * (page_size + CHECKSUM_SIZE);
             warn!(
                 original_blob_size,
                 new_blob_size, "truncating blob to remove invalid data"
@@ -471,7 +473,7 @@ impl<B: Blob> Writer<B> {
     ///
     /// # Returns
     ///
-    /// A tuple of `(last_page, page_count, invalid_data_found)`:
+    /// A tuple of `(last_page, page_count)`:
     ///
     /// - `last_page`: The last valid page's logical data, with its active checksum if it is
     ///   partial (contains fewer than `page_size` logical bytes), or [LastPage::Empty] if no valid
@@ -479,23 +481,19 @@ impl<B: Blob> Writer<B> {
     ///
     /// - `page_count`: The number of pages in the blob up to and including the last valid page
     ///   found (whether or not it's partial). Note that it's possible earlier pages may be invalid
-    ///   since this function stops scanning when it finds one valid page.
-    ///
-    /// - `invalid_data_found`: `true` if there are any bytes in the blob that follow the last valid
-    ///   page. Typically the blob should be resized to eliminate them since their integrity cannot
-    ///   be guaranteed.
+    ///   since this function stops scanning when it finds one valid page. Any bytes past these
+    ///   pages are invalid, and the blob should typically be resized to eliminate them since their
+    ///   integrity cannot be guaranteed.
     async fn read_last_valid_page(
         blob: &B,
         blob_size: u64,
         page_size: u64,
-    ) -> Result<(LastPage, u64, bool), Error> {
+    ) -> Result<(LastPage, u64), Error> {
         let physical_page_size = page_size + CHECKSUM_SIZE;
-        let partial_bytes = blob_size % physical_page_size;
-        let mut last_page_end = blob_size - partial_bytes;
 
-        // If the last physical page in the blob is truncated, it can't have a valid CRC record and
-        // must be invalid.
-        let mut invalid_data_found = partial_bytes != 0;
+        // A truncated last physical page can't have a valid CRC record, so the scan starts at the
+        // last whole page.
+        let mut last_page_end = blob_size - blob_size % physical_page_size;
 
         while last_page_end != 0 {
             // Read the last page and parse its CRC record.
@@ -522,22 +520,17 @@ impl<B: Blob> Writer<B> {
                         // The page is partial (logical data doesn't fill the page).
                         LastPage::Partial(logical_bytes, checksum)
                     };
-                    return Ok((
-                        last_page,
-                        last_page_end / physical_page_size,
-                        invalid_data_found,
-                    ));
+                    return Ok((last_page, last_page_end / physical_page_size));
                 }
                 None => {
                     // The page is invalid.
                     last_page_end = page_start;
-                    invalid_data_found = true;
                 }
             }
         }
 
         // No valid page exists in the blob.
-        Ok((LastPage::Empty, 0, invalid_data_found))
+        Ok((LastPage::Empty, 0))
     }
 
     /// Capture an immutable [`Sealed`] view of the logical bytes.
