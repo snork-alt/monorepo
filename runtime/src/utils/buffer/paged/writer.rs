@@ -1776,7 +1776,8 @@ mod tests {
     }
 
     /// Opening a blob that ends in a full page caches that page, so a read of the tail right after
-    /// opening needs no I/O. Earlier pages are not read.
+    /// opening needs no I/O. Earlier pages are not read. When recovery trims a torn last page, the
+    /// full page it recovers to is the one cached.
     #[test_traced("DEBUG")]
     fn test_open_caches_full_last_page() {
         let executor = deterministic::Runner::default();
@@ -1819,6 +1820,37 @@ mod tests {
             assert!(writer.try_read_sync_into(&mut probe, 2 * page as u64));
             assert_eq!(probe, data[2 * page..]);
             assert!(!writer.try_read_sync_into(&mut probe, page as u64));
+            drop(writer);
+
+            // Tear the last page.
+            let (blob, blob_size) = context
+                .open("test_partition", b"open_caches_last_page")
+                .await
+                .unwrap();
+            let offset = 2 * (PAGE_SIZE.get() as u64 + CHECKSUM_SIZE) + 7;
+            let byte = blob
+                .read_at(offset, 1, ReadOptions::default())
+                .await
+                .unwrap()
+                .coalesce();
+            blob.write_at(
+                offset,
+                vec![byte.as_ref()[0] ^ 0xFF],
+                WriteOptions::default(),
+            )
+            .await
+            .unwrap();
+            blob.sync().await.unwrap();
+
+            // Recovery trims the torn page and caches the full page before it instead.
+            let cache_ref = CacheRef::new(PAGE_SIZE, NZUsize!(BUFFER_SIZE));
+            let writer = Writer::new(blob, blob_size, BUFFER_SIZE, cache_ref)
+                .await
+                .unwrap();
+            assert_eq!(writer.size(), 2 * page as u64);
+            assert!(writer.try_read_sync_into(&mut probe, page as u64));
+            assert_eq!(probe, data[page..2 * page]);
+            assert!(!writer.try_read_sync_into(&mut probe, 0));
         });
     }
 
